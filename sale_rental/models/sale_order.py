@@ -2,10 +2,15 @@
 # @author Alexis de Lattre <alexis.delattre@akretion.com>
 # Copyright 2016-2021 Sodexis (http://sodexis.com)
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
+# Copyright 2009-2023 Noviat (https://www.noviat.com)
+# License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 import logging
+from calendar import isleap, monthrange
+from datetime import timedelta
 
 from dateutil.relativedelta import relativedelta
+from dateutil.rrule import MONTHLY, YEARLY, rrule
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError, ValidationError
@@ -121,18 +126,20 @@ class SaleOrderLine(models.Model):
                         )
                         % line.product_id.display_name
                     )
-                if line.product_uom_qty != line.rental_qty * line.number_of_days:
+                rental_qty = self._get_rental_qty()
+                if line.product_uom_qty != rental_qty:
                     raise ValidationError(
                         _(
                             "On the sale order line with product '%s' "
                             "the Product Quantity (%s) should be the "
-                            "number of days (%s) "
+                            "number of %s (%s) "
                             "multiplied by the Rental Quantity (%s)."
                         )
                         % (
                             line.product_id.display_name,
                             line.product_uom_qty,
-                            line.number_of_days,
+                            line.product_uom.name,
+                            rental_qty,
                             line.rental_qty,
                         )
                     )
@@ -350,13 +357,89 @@ class SaleOrderLine(models.Model):
         if self.sell_rental_id:
             self.product_uom_qty = self.sell_rental_id.rental_qty
 
-    @api.onchange("rental_qty", "number_of_days", "product_id")
+    @api.onchange("rental_qty", "number_of_days", "product_id", "product_uom")
     def rental_qty_number_of_days_change(self):
         if self.product_id.rented_product_id:
-            qty = self.rental_qty * self.number_of_days
+            qty = self._get_rental_qty()
             self.product_uom_qty = qty
 
     @api.onchange("rental_type")
     def rental_type_change(self):
         if self.rental_type == "new_rental":
             self.extension_rental_id = False
+
+    def _get_rental_qty(self):
+        day_uom = self.env.ref("sale_rental.sale_rental_product_uom_day")
+        if self.product_uom != day_uom:
+            if self.product_uom == self.env.ref(
+                "sale_rental.sale_rental_product_uom_month"
+            ):
+                return self._get_number_of_months()
+            elif self.product_uom == self.env.ref(
+                "sale_rental.sale_rental_product_uom_year"
+            ):
+                return self._get_number_of_years()
+            else:
+                return self.rental_qty * day_uom._compute_quantity(
+                    self.number_of_days, self.product_uom
+                )
+        else:
+            return self.rental_qty * self.number_of_days
+
+    def _get_number_of_months(self):
+        # Explanation about fake date
+        # For example :
+        # - start_date = 15/01/2023
+        # - end_date = 06/02/2023
+        # The rrule will only return the month of January and not February,
+        # so I fake the end date to have the day of the start date and trick rrule
+        qty = 0.0
+        fake_end_date = self.end_date.replace(day=self.start_date.day)
+        for dt in rrule(MONTHLY, dtstart=self.start_date, until=fake_end_date):
+            days_of_month = monthrange(dt.year, dt.month)
+            if self.start_date.month == self.end_date.month:
+                qty = self.rental_qty * (self.number_of_days / days_of_month[1])
+            elif self.start_date.month == dt.month:
+                qty += (
+                    self.rental_qty
+                    * (days_of_month[1] - self.start_date.day + 1)
+                    / days_of_month[1]
+                )
+            elif self.end_date.month == dt.month:
+                qty += self.rental_qty * (self.end_date.day / days_of_month[1])
+            else:
+                qty += 1
+        return qty
+
+    def _get_number_of_years(self):
+        self.ensure_one()
+        qty = 0.0
+        days_of_year = 366 if isleap(self.start_date.year) else 365
+        if self.number_of_days < days_of_year:
+            qty = self.rental_qty * (self.number_of_days / days_of_year)
+        else:
+            # Same thing as for the months
+            fake_end_date = self.end_date.replace(
+                day=self.start_date.day, month=self.start_date.month
+            )
+            for dt in rrule(YEARLY, dtstart=self.start_date, until=fake_end_date):
+                days_of_year = 366 if isleap(dt.year) else 365
+                if self.start_date.year == dt.year:
+                    qty += (
+                        self.rental_qty
+                        * (
+                            dt.date().replace(month=12, day=31)
+                            - self.start_date
+                            + timedelta(days=1)
+                        ).days
+                        / days_of_year
+                    )
+                elif self.end_date.year == dt.year:
+                    qty += (
+                        self.rental_qty
+                        * (self.end_date - dt.date() + timedelta(days=1)).days
+                        / days_of_year
+                    )
+                else:
+                    qty += 1
+        return qty

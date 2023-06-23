@@ -2,6 +2,8 @@
 # @author Alexis de Lattre <alexis.delattre@akretion.com>
 # Copyright 2016-2021 Sodexis (http://sodexis.com)
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
+# Copyright 2009-2023 Noviat (https://www.noviat.com)
+# License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
@@ -23,7 +25,7 @@ class ProductProduct(models.Model):
 
     @api.constrains("rented_product_id", "must_have_dates", "type", "uom_id")
     def _check_rental(self):
-        day_uom = self.env.ref("uom.product_uom_day")
+        rental_category_uom = self.env.ref("sale_rental.uom_categ_rental_time")
         for product in self:
             if product.rented_product_id:
                 if product.type != "service":
@@ -39,15 +41,13 @@ class ProductProduct(models.Model):
                         )
                         % product.name
                     )
-                # In the future, we would like to support all time UoMs
-                # but it is more complex and requires additionnal developments
-                if product.uom_id != day_uom:
+                if product.uom_id.category_id != rental_category_uom:
                     raise ValidationError(
                         _(
                             "The unit of measure of the rental product '%s' must "
-                            "be 'Day'."
+                            "be of the rental category '%s'."
                         )
-                        % product.name
+                        % (product.name, rental_category_uom.name)
                     )
 
 

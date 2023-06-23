@@ -55,7 +55,7 @@ class CreateRentalProduct(models.TransientModel):
 
     @api.model
     def _prepare_rental_product(self):
-        day_uom_id = self.env.ref("uom.product_uom_day").id
+        day_uom_id = self.env.ref("sale_rental.sale_rental_product_uom_day").id
         vals = {
             "type": "service",
             "sale_ok": True,
